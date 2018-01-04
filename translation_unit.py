@@ -12,6 +12,10 @@ class TranslationUnit:
 
     Attributes:
         static_prefix (str): Name of file. Used to label static variables.
+        static_labels (dict): Dictionary of static labels (key) and their associated register no (value).
+        eq_label_count (int): Count of eq command occurences for unique labels.
+        gt_label_count (int): Count of gt command occurences for unique labels.
+        lt_label_count (int): Count of lt command occurences for unique labels.
 
     """
 
