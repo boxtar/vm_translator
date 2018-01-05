@@ -4,8 +4,12 @@ class TranslationUnit:
     """This class takes VM Bytecode commands and translates them to Hack ASM commands.
 
     The public api is:
-        push_command(segment, offset), pop_command(segment, offset), add_command(),
-        sub_command(), gt_command(), lt_command() etc...
+        push_command(segment, offset),
+        pop_command(segment, offset),
+        arithmetic_command(command),
+        label_command(label),
+        unconditional_goto_command(label),
+        conditional_goto_command(label)
 
     Args:
         static_prefix (str): Name of file. Used to label static variables.
@@ -41,6 +45,7 @@ class TranslationUnit:
     __TRUE = -1
     __FALSE = 0
 
+    # --- Constructor --- #
     def __init__(self, static_prefix):
         """Static Prefix is required for creating static variable labels"""
         self.static_prefix = static_prefix
@@ -206,7 +211,7 @@ class TranslationUnit:
         )
 
 
-    # --- Arithmetic methods --- #
+    # --- Arithmetic & Logical methods --- #
     def arithmetic_command(self, command):
         """This function translates an arithmetic command to hack asm.
 
@@ -314,6 +319,33 @@ class TranslationUnit:
             f'M=D{logical_op}M\n'
         )
         return code
+
+
+    # --- Branching methods --- #
+    @staticmethod
+    def label_command(label):
+        """Returns Hack asm for declaring a label"""
+        return f'({label})\n'
+
+    @staticmethod
+    def unconditional_goto_command(label):
+        """Returns Hack asm for unconditionally branching to a given label"""
+        return (
+            f'@{label}\n'
+            '0;JMP\n'
+        )
+
+    @staticmethod
+    def conditional_goto_command(label):
+        """Returns Hack asm for conditionally branching to a given label"""
+        code = TranslationUnit.__pop_stack_to_d_reg()
+        code += (
+            'D=D+1\n' # TRUE = -1 so adding 1 to it should make it zero; else it's not TRUE
+            f'@{label}\n'
+            'D;JEQ\n' # Jump if D = 0 (-1 + 1)
+        )
+        return code
+
 
     # --- Other methods --- #
     def __get_static_label(self, offset):

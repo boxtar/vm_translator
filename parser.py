@@ -55,25 +55,38 @@ class HackParser:
     def run(self):
         """Drives the translation process"""
         if not self.source_commands:
-            raise ValueError("No source commands provided.")
+            raise ParserError("No source commands provided", False, 0)
         # This list will be filled with assembly from translator
         asm_list = []
         for command in self.source_commands:
             self.line_no += 1
+            # If current command is not a comment or blank line then process command
             if not self.__is_comment_or_empty_line(command):
                 command_type = self.__get_command_type(command)
                 if command_type == self.__COMMAND_TYPES['C_PUSH']:
-                    segment = self.__get_arg_1(command, command_type)
-                    offset = self.__get_arg_2(command, command_type)
+                    segment = self.__get_arg_1(command, command_type, self.line_no)
+                    offset = self.__get_arg_2(command, command_type, self.line_no)
                     asm = self.translator.push_command(segment, offset)
                     asm_list.append(f'// --- {command} ---\n{asm}')
                 elif command_type == self.__COMMAND_TYPES['C_POP']:
-                    segment = self.__get_arg_1(command, command_type)
-                    offset = self.__get_arg_2(command, command_type)
+                    segment = self.__get_arg_1(command, command_type, self.line_no)
+                    offset = self.__get_arg_2(command, command_type, self.line_no)
                     asm = self.translator.pop_command(segment, offset)
                     asm_list.append(f'// --- {command} ---\n{asm}')
                 elif command_type == self.__COMMAND_TYPES['C_ARITHMETIC']:
                     asm = self.translator.arithmetic_command(command)
+                    asm_list.append(f'// --- {command} ---\n{asm}')
+                elif command_type == self.__COMMAND_TYPES['C_LABEL']:
+                    label = self.__get_arg_1(command, command_type, self.line_no)
+                    asm = self.translator.label_command(label)
+                    asm_list.append(f'// --- {command} ---\n{asm}')
+                elif command_type == self.__COMMAND_TYPES['C_GOTO']:
+                    label = self.__get_arg_1(command, command_type, self.line_no)
+                    asm = self.translator.unconditional_goto_command(label)
+                    asm_list.append(f'// --- {command} ---\n{asm}')
+                elif command_type == self.__COMMAND_TYPES['C_IF']:
+                    label = self.__get_arg_1(command, command_type, self.line_no)
+                    asm = self.translator.conditional_goto_command(label)
                     asm_list.append(f'// --- {command} ---\n{asm}')
         return asm_list
                     
@@ -87,6 +100,13 @@ class HackParser:
                 return self.__check_push_command(command, self.line_no)
             elif command[0] == 'pop':
                 return self.__check_pop_command(command, self.line_no)
+        elif len(command) == 2:
+            if command[0] == 'label':
+                return self.__COMMAND_TYPES['C_LABEL']
+            elif command[0] == 'goto':
+                return self.__COMMAND_TYPES['C_GOTO']
+            elif command[0] == 'if-goto':
+                return self.__COMMAND_TYPES['C_IF']
         elif len(command) == 1:
             # If command has 1x part then could be Arithmetic command
             if command[0] in self.__ARITHMETIC_COMMANDS:
@@ -101,12 +121,12 @@ class HackParser:
         """Checks semantics of C_PUSH command"""
         # Provided segment not in available push segments? Raise Exception
         if not command[1] in cls.__PUSH_STACKS:
-            raise ValueError(
-                cls.__get_unrecognised_mem_seg_msg(command[1], line_no))
+            raise ParserError(
+                cls.__get_unrecognised_mem_seg_msg(command[1]), ' '.join(command), line_no)
         # Provided offset not a digit? Raise Exception
         if not command[2].isdigit():
-            raise ValueError(
-                cls.__get_illegal_offset_message(command[2], line_no))
+            raise ParserError(
+                cls.__get_illegal_offset_message(command[2]), ' '.join(command), line_no)
         # All good, return push command type
         return cls.__COMMAND_TYPES['C_PUSH']
 
@@ -115,32 +135,37 @@ class HackParser:
         """Checks semantics of C_POP command"""
         # Provided segment not in available pop segments? Raise Exception
         if not command[1] in cls.__POP_STACKS:
-            raise ValueError(
-                cls.__get_unrecognised_mem_seg_msg(command[1], line_no))
+            raise ParserError(
+                cls.__get_unrecognised_mem_seg_msg(command[1]), ' '.join(command), line_no)
         # Provided offset not a digit? Raise Exception
         if not command[2].isdigit():
-            raise ValueError(
-                cls.__get_illegal_offset_message(command[2], line_no))
+            raise ParserError(
+                cls.__get_illegal_offset_message(command[2]), ' '.join(command), line_no)
         # All good, return pop command type
         return cls.__COMMAND_TYPES['C_POP']
     
     @classmethod
-    def __get_arg_1(cls, command, command_type):
+    def __get_arg_1(cls, command, command_type, line_no):
         """Returns the first argument of the given command
 
         In the case of C_ARITHMETIC, returns the command itself (add, sub etc)
         Should not be called if command is C_RETURN
         """
-        command = command.split()
+
+        if command_type == cls.__COMMAND_TYPES['C_RETURN']:
+            raise ParserError("Cannot get arg 1 of return command type", command, line_no)
+
+        command_split = command.split()
+
         if command_type == cls.__COMMAND_TYPES['C_ARITHMETIC']:
-            return command[0]
-        elif command_type == cls.__COMMAND_TYPES['C_PUSH'] or command_type == cls.__COMMAND_TYPES['C_POP']:
-            return command[1]
-        raise ValueError(
-            "Cannot get argument 1 of command: " + ' '.join(command))
+            return command_split[0]
+        else:
+            return command_split[1]
+        raise ParserError(
+            "Cannot get argument 1 of command: " + command, command, line_no)
 
     @classmethod
-    def __get_arg_2(cls, command, command_type):
+    def __get_arg_2(cls, command, command_type, line_no):
         """Returns the second argument of the given command
         
         Should only be called for the following command types:
@@ -149,8 +174,8 @@ class HackParser:
         command = command.split()
         if command_type in cls.__ARG2_LIST:
             return int(command[2])
-        raise ValueError(
-            "Cannot get argument 2 of command: " + ' '.join(command))
+        raise ParserError(
+            "Cannot get argument 2 of command: " + ' '.join(command), ' '.join(command), line_no)
 
     @staticmethod
     def __is_comment_or_empty_line(command):
@@ -169,22 +194,12 @@ class HackParser:
         return f'Unrecognised command \'{command}\'\n'
 
     @staticmethod
-    def __get_unrecognised_mem_seg_msg(segment, line_no):
-        return (
-            '----------------------------------\n'
-            f'Parser error at line no. {line_no}\n'
-            f'Unrecognised memory segment \'{segment}\'\n'
-            '----------------------------------\n'
-        )
+    def __get_unrecognised_mem_seg_msg(segment):
+        return f'Unrecognised memory segment \'{segment}\'\n'
 
     @staticmethod
-    def __get_illegal_offset_message(offset, line_no):
-        return (
-            '----------------------------------\n'
-            f'Parser error at line no. {line_no}\n'
-            f'Illegal offset \'{offset}\'\n'
-            '----------------------------------\n'
-        )
+    def __get_illegal_offset_message(offset):
+        return f'Illegal offset \'{offset}\'\n'
 
 
 class ParserError(Exception):
