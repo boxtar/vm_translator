@@ -3,20 +3,14 @@
 class TranslationUnit:
     """This class takes VM Bytecode commands and translates them to Hack ASM commands.
 
-    The public api is:
-        push_command(segment, offset),
-        pop_command(segment, offset),
-        arithmetic_command(command),
-        label_command(label),
-        unconditional_goto_command(label),
-        conditional_goto_command(label)
-
     Args:
-        static_prefix (str): Name of file. Used to label static variables.
+        filename (str, optional): Name of file being translated.
+            If no file name provided then must set using set_filename(filename_str)
 
     Attributes:
-        static_prefix (str): Name of file. Used to label static variables.
+        static_prefix/filename (str): Name of file. Used to label static variables.
         static_labels (dict): Dictionary of static labels (key) and their associated register no (value).
+        current_function (str): Name of current function being translated.
         eq_label_count (int): Count of eq command occurences for unique labels.
         gt_label_count (int): Count of gt command occurences for unique labels.
         lt_label_count (int): Count of lt command occurences for unique labels.
@@ -34,25 +28,38 @@ class TranslationUnit:
 
     __VAR_BASE_ADDRESS = 16 # 0x0010
 
-    __TEMP_BASE_ADDRESS = 5 # 0x0005
+    __CALL_FRAME_SIZE = 5
 
+    __TEMP_BASE_ADDRESS = 5 # 0x0005
     __TEMP_MAX_ADDRESS = 12 # 0x000C
 
     __THIS_POINTER = 0
-    
     __THAT_POINTER = 1
 
     __TRUE = -1
     __FALSE = 0
 
     # --- Constructor --- #
-    def __init__(self, static_prefix):
-        """Static Prefix is required for creating static variable labels"""
-        self.static_prefix = static_prefix
+    def __init__(self, filename=None):
         self.static_labels = {}
+        self.function_call_count = {}
+        self.current_function = ''
         self.eq_label_count = 0
         self.gt_label_count = 0
         self.lt_label_count = 0
+        if filename:
+            self.set_filename(filename)
+            
+    def set_filename(self, filename):
+        """Sets the name of the file being translated.
+
+        A unique name is required for creating static variables and unique labels.
+        Each file being translated will be amalgamated into 1 asm file so
+        all labels need to be unique. Using the filename is a good way 
+        to ensure this.
+        """
+        self.static_prefix = self.filename = filename
+        self.current_function = ''
 
 
     # --- Push Methods --- #
@@ -322,29 +329,230 @@ class TranslationUnit:
 
 
     # --- Branching methods --- #
-    @staticmethod
-    def label_command(label):
+    def label_command(self, label):
         """Returns Hack asm for declaring a label"""
-        return f'({label})\n'
+        return f'({self.__get_label(label)})\n'
 
-    @staticmethod
-    def unconditional_goto_command(label):
+    def unconditional_goto_command(self, label):
         """Returns Hack asm for unconditionally branching to a given label"""
         return (
-            f'@{label}\n'
+            f'@{self.__get_label(label)}\n'
             '0;JMP\n'
         )
 
-    @staticmethod
-    def conditional_goto_command(label):
+    def conditional_goto_command(self, label):
         """Returns Hack asm for conditionally branching to a given label"""
         code = TranslationUnit.__pop_stack_to_d_reg()
         code += (
-            'D=D+1\n' # TRUE = -1 so adding 1 to it should make it zero; else it's not TRUE
-            f'@{label}\n'
-            'D;JEQ\n' # Jump if D = 0 (-1 + 1)
+            f'@{self.__get_label(label)}\n'
+            'D;JNE\n' # Jump if D not FALSE (0)
         )
         return code
+
+
+    # --- Function call and return methods --- #
+    def call_function(self, function_name, arg_count):
+        """Returns Hack asm for setting up a function call.
+
+        1. Saves callers state to stack (call frame)
+        2. Sets ARG and LCL segment pointers for function call
+        3. Jumps to function being called
+        4. Sets up unique return label for continuing after function call
+
+        Args:
+            function_name (str): Unique label for function
+            arg_count (str/int): Number of args pushed for function call  
+        
+        """
+
+        # The unique label for returning to caller.
+        # The assembler will turn this into an instruction pointer.
+        return_label = self.__get_return_label(function_name)
+
+        # Save return label (instruction pointer) to frame[0]
+        code = self.__push_return_address_to_stack(return_label)
+
+        # Memory segments of caller to be saved to frame[1-4]
+        segments_to_save = ('LCL', 'ARG', 'THIS', 'THAT')
+        for segment in segments_to_save:
+            code += self.__push_segment_pointer_to_stack(segment)
+
+        # Set ARG pointer for function call
+        code += self.__set_arg_pointer(arg_count)
+
+        # Set LCL pointer for function call
+        code += self.__set_local_pointer()
+
+        # All set; Jump to function
+        code += (
+            f'@{function_name}\n'
+            '0;JMP\n'
+        )
+
+        # Insert return label into ASM for returning back to correct asm command
+        # after the function returns.
+        code += f'({return_label})\n'
+        return code
+
+
+    def function_declaration(self, function_name, local_count):
+        """Returns Hack asm for declaring a function.
+
+        Args:
+            function_name (str): Unique label for function
+            local_count (str/int): Number of local vars to be initialised to 0
+        
+        """
+        # We're setting up a function so all labels within it need to be unique. 
+        # Use function name as the prefix. 
+        self.current_function = function_name
+        code = f'({function_name})\n'
+        while local_count > 0:
+            local_count -= 1
+            code += (
+                '@SP\n'
+                'A=M\n'
+                'M=0\n'
+                '@SP\n'
+                'M=M+1\n'
+            )
+        return code
+
+    def return_from_function(self):
+        """Returns hack asm that handles returning from a function"""
+
+        # Where in RAM to store end of frame address
+        end_frame = 13
+        # Where in RAM to store the return address (instruction pointer)
+        return_address = 14
+        # Store the address of the end of the frame and the return address (instruction pointer)
+        code = self.__store_end_frame_and_return_addr(end_frame, return_address)
+        # Push result of function call to end of callers stack
+        code += self.__save_result_to_stack()
+        # Reset SP to top of callers stack
+        code += self.__reset_stack_pointer_to_caller()
+        # Restore callers memory segments from call frame
+        code += self.__restore_caller_segments(end_frame)
+        # Jump to return address
+        code += (
+            f'@R{return_address}\n'
+            'A=M\n'
+            '0;JMP\n'
+        )
+        return code
+        
+    def __get_label(self, label):
+        """Builds formatted asm label"""
+        # Label format: {filename}.{function_name}${label}
+        # return f'{self.filename}.{self.__get_current_function()}${label}'
+        # The function labels seem to have the Filename prepended by the compiler
+        return f'{self.current_function}${label}'
+
+    @staticmethod
+    def __store_end_frame_and_return_addr(end_frame, return_address):
+        code = (
+            '@LCL\n'
+            'D=M\n'
+        )
+        code += TranslationUnit.__store_d_reg_in_vm_temp(end_frame)
+        # At this point we're addressing @end_frame (due to above function call)
+        # and D still contains the address of the end of the frame
+        code += (
+            f'@{TranslationUnit.__CALL_FRAME_SIZE}\n'
+            'D=D-A\n' # Return address is first on call frame so end_frame - frame size = return address
+        )
+        code += TranslationUnit.__store_d_reg_in_vm_temp(return_address)
+        return code
+
+    @staticmethod
+    def __save_result_to_stack():
+        # push result of function to end of callers stack. 
+        # *ARG = pop() // ARG points where we want the result of the function to go.
+        code = TranslationUnit.__pop_stack_to_d_reg()
+        code += (
+            '@ARG\n'
+            'A=M\n'
+            'M=D\n'
+        )
+        return code
+
+    @staticmethod
+    def __reset_stack_pointer_to_caller():
+        # ARG points to first argument (arg 0). This is where the result will
+        # will be saved after the function finishes.
+        # We want SP to be ARG + 1.
+        code = (
+            '@ARG\n'
+            'D=M\n'
+            '@SP\n'
+            'M=D+1\n'
+        )
+        return code
+
+    @staticmethod
+    def __restore_caller_segments(end_frame_pointer):
+        # Memory segments of caller to be restored from frame[1-4]
+        segments_to_restore = ('LCL', 'ARG', 'THIS', 'THAT')
+        code = ''
+        for index, segment in enumerate(segments_to_restore, 1):
+            offset = TranslationUnit.__CALL_FRAME_SIZE - index
+            code += (
+                f'@R{end_frame_pointer}\n'
+                'D=M\n'
+                f'@{offset}\n'
+                'D=D-A\n'
+                'A=D\n'
+                'D=M\n'
+                f'@{segment}\n'
+                'M=D\n'
+            )
+        return code
+
+
+    @staticmethod
+    def __push_return_address_to_stack(label):
+        code = f'@{label}\nD=A\n'
+        code += TranslationUnit.__push_d_reg_to_stack()
+        return code
+
+    @staticmethod
+    def __push_segment_pointer_to_stack(segment_label):
+        code = f'@{segment_label}\nD=M\n'
+        code += TranslationUnit.__push_d_reg_to_stack()
+        return code
+
+    @staticmethod
+    def __set_arg_pointer(arg_count):
+        return (
+            '@SP\n'
+            'D=M\n'
+            f'@{TranslationUnit.__CALL_FRAME_SIZE}\n'
+            'D=D-A\n'
+            f'@{arg_count}\n'
+            'D=D-A\n'
+            '@ARG\n'
+            'M=D\n'
+        )
+
+    @staticmethod
+    def __set_local_pointer():
+        return '@SP\nD=M\n@LCL\nM=D\n'
+
+    def __get_return_label(self, function_name):
+        # Get the next call count to make label unique
+        call_count = self.__get_function_call_count(function_name)
+
+        return f'{function_name}$ret.{call_count}'
+
+    def __get_function_call_count(self, function_name):
+        if not function_name in self.function_call_count:
+            # First time function_name has appeared? Return 1 and add to dict
+            self.function_call_count[function_name] = 1
+            return 1
+        else:
+            # Increment counter for function_name and return new count
+            self.function_call_count[function_name] += 1
+            return self.function_call_count[function_name]
 
 
     # --- Other methods --- #
@@ -353,7 +561,7 @@ class TranslationUnit:
         if not label in self.static_labels:
             count = len(self.static_labels)
             self.static_labels[label] = self.__VAR_BASE_ADDRESS + count
-        return self.static_labels[label]
+        return label # self.static_labels[label]
     
     @staticmethod
     def __store_d_reg_in_vm_temp(temp):

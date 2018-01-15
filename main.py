@@ -1,40 +1,92 @@
 """Drives the process of translating Hack VM into Hack assembly"""
-import sys 
+import sys
+import argparse
+from pathlib import Path
+import os.path
 from parser import HackParser, ParserError
 from translation_unit import TranslationUnit
 
-# Check for file name
-if len(sys.argv) != 2:
-    print("Usage: main.py file.vm")
-    sys.exit()
+def parse_command_line_args(default_outfile_name):
+    """Parse Command Line Arguments.
+    
+    Returns a dictionary with key as argument name.
+    """
+    # Get Arg Parser Object
+    arg_parser = argparse.ArgumentParser()
+    # required positional arg test
+    arg_parser.add_argument('-s', '--src', dest='source', default='./',
+                            help="Source file or directory containing source files to translate")
+    # optional arg test
+    arg_parser.add_argument('-o', '--out', dest='output_file', default=default_outfile_name,
+                            help=f"Output file name. Default is {default_outfile_name}")
+    # Parse command line args
+    args = arg_parser.parse_args()
 
-# If we got here then we have a file name to work with
-IN_FILE = sys.argv[1]
+    return {
+        'source': args.source,
+        'output_file': args.output_file
+    }
 
-# Check input file's extension
-if not IN_FILE.endswith('.vm'):
-    print("Input file must end in '.vm'")
-    sys.exit()
+# List of dictionaries containing data on files to be translated.
+# Each file dict has a 'filename' and 'commands' key:
+# filename is the name of the file including extension.
+# commands is a list of lines in the file.
+VM_FILES = []
 
-# Set output file name
-OUT_FILE = IN_FILE[0:-3] + '.asm'
+# Create parser instance which requires a translator instance
+PARSER = HackParser(TranslationUnit())
 
-print('Staring translation...')
+# This list will hold all ASM commands from all files being translated.
+ASM = []
 
-with open(IN_FILE) as filename:
-    PARSER = HackParser(filename.readlines(), TranslationUnit(IN_FILE[0:-3]))
+# Parse command line arguments
+ARGS = parse_command_line_args('out.asm')
+
+# Source file or directory
+SOURCE = ARGS['source']
+OUTPUT_FILE = ARGS['output_file']
+
+# Turn -s, --src arg into a Path object
+SOURCE = Path(SOURCE)
+
+# Check if source is file, directory or doesn't exist
+if SOURCE.is_file():
+    with open(SOURCE) as FILE:
+        VM_FILES.append({
+            'filename': os.path.basename(SOURCE)[0:-3],
+            'commands': FILE.readlines()
+        })
+elif SOURCE.is_dir():
+    for VM_FILE in list(SOURCE.glob('./*.vm')):
+        with open(VM_FILE) as FILE:
+            VM_FILES.append({
+                'filename': os.path.basename(VM_FILE)[0:-3],
+                'commands': FILE.readlines()
+            })
+else:
+    raise FileNotFoundError(f'{SOURCE} is not a file or directory')
+
+# Start translation process
+print('>>> Translation started')
 
 try:
-    ASM = PARSER.run()
-    # print(''.join(ASM))
-    with open(OUT_FILE, 'w') as output_file:
-        for command in ASM:
-            output_file.write(command)
+    for VM_FILE in VM_FILES:
+        PARSER.set_new_file(VM_FILE)
+        ASM += PARSER.run()
 except ParserError as err:
-    MSG = f'- Parser error on line number {err.line_no}:\n  '
+    # Parser error
+    MSG = f'- Parser error on line number {err.line_no} in {err.filename}.vm:\n  '
     print(MSG + str(err))
+    sys.exit()
 except ValueError as err:
+    # TODO: make this a Translator specific error
     MSG = f'- Translator error:\n  '
     print(MSG + str(err))
+    sys.exit()
 
-print('Translation finished')
+with open(OUTPUT_FILE, 'w') as output_file:
+    for command in ASM:
+        output_file.write(command)
+
+print('>>> Translation finished')
+# Translation process finished
