@@ -11,20 +11,20 @@ def parse_command_line_args(default_outfile_name):
     
     Returns a dictionary with key as argument name.
     """
-    # Get Arg Parser Object
     arg_parser = argparse.ArgumentParser()
-    # required positional arg test
     arg_parser.add_argument('-s', '--src', dest='source', default='./',
                             help="Source file or directory containing source files to translate")
-    # optional arg test
     arg_parser.add_argument('-o', '--out', dest='output_file', default=default_outfile_name,
                             help=f"Output file name. Default is {default_outfile_name}")
+    arg_parser.add_argument('-b', '--boot', dest='bootstrap_required', action='store_true',
+                            help='If flag is set then asm output will begin with bootstrap instructions')
     # Parse command line args
     args = arg_parser.parse_args()
 
     return {
         'source': args.source,
-        'output_file': args.output_file
+        'output_file': args.output_file,
+        'bootstrap_required': args.bootstrap_required
     }
 
 # List of dictionaries containing data on files to be translated.
@@ -41,6 +41,10 @@ ASM = []
 
 # Parse command line arguments
 ARGS = parse_command_line_args('out.asm')
+
+# If -b, --boot flag provided then set bootstrap code
+if ARGS['bootstrap_required']:
+    ASM.append(PARSER.translator.get_bootstrap_instructions())
 
 # Source file or directory
 SOURCE = ARGS['source']

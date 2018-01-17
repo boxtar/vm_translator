@@ -26,16 +26,13 @@ class TranslationUnit:
     __ARITHMETIC_COMMANDS = ('add', 'sub', 'neg', 'eq',
                              'gt', 'lt', 'and', 'or', 'not')
 
-    __VAR_BASE_ADDRESS = 16 # 0x0010
-
-    __CALL_FRAME_SIZE = 5
-
-    __TEMP_BASE_ADDRESS = 5 # 0x0005
-    __TEMP_MAX_ADDRESS = 12 # 0x000C
-
+    __VAR_BASE_ADDRESS = 16     # 0x0010
+    __CALL_FRAME_SIZE = 5       # 0x0005
+    __SP_BASE_ADDRESS = 256     # 0x0100
+    __TEMP_BASE_ADDRESS = 5     # 0x0005
+    __TEMP_MAX_ADDRESS = 12     # 0x000C
     __THIS_POINTER = 0
     __THAT_POINTER = 1
-
     __TRUE = -1
     __FALSE = 0
 
@@ -61,6 +58,20 @@ class TranslationUnit:
         self.static_prefix = self.filename = filename
         self.current_function = ''
 
+    def get_bootstrap_instructions(self):
+        """Returns the Hack bootstrap instructions.
+
+        Sets stack pointer 
+        """
+        code = (
+            '// Bootstrap code\n'
+            f'@{self.__SP_BASE_ADDRESS}\n'
+            'D=A\n'
+            '@SP\n'
+            'M=D\n'
+        )
+        code += self.call_function('Sys.init', 0)
+        return code
 
     # --- Push Methods --- #
     def push_command(self, segment, offset):
@@ -459,7 +470,8 @@ class TranslationUnit:
         # and D still contains the address of the end of the frame
         code += (
             f'@{TranslationUnit.__CALL_FRAME_SIZE}\n'
-            'D=D-A\n' # Return address is first on call frame so end_frame - frame size = return address
+            'A=D-A\n' # Return address is first on call frame so *(end_frame - frame size) = return address
+            'D=M\n'
         )
         code += TranslationUnit.__store_d_reg_in_vm_temp(return_address)
         return code
